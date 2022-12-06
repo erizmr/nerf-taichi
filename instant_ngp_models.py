@@ -5,6 +5,7 @@ import torch.nn as nn
 import platform
 
 from stannum import Tin
+from stannum import EmptyTin
 from matplotlib import pyplot as plt
 from instant_ngp_utils import SHEncoder
 from taichi.math import uvec3
@@ -179,12 +180,13 @@ class MultiResHashEncoding:
 
 
 class MLP(nn.Module):
-    def __init__(self, grid_encoding_module=None):
+    def __init__(self, grid_encoding_module=None, composite_module=None):
         super(MLP, self).__init__()
         sigma_layers = []
         color_layers = []
         encoding_module = None
         self.grid_encoding = grid_encoding_module
+        self.composite_module = composite_module
         hidden_size = 64
         if self.grid_encoding:
             sigma_input_size = self.grid_encoding.n_features
@@ -226,6 +228,9 @@ class MLP(nn.Module):
         color_layers.append(nn.Linear(hidden_size, color_output_size, bias=False))
         color_layers.append(nn.Sigmoid())
 
+        if self.composite_module:
+            self.composite_module = composite_module
+
         n_parameters += color_input_size * hidden_size + hidden_size * hidden_size + hidden_size * color_output_size
         self.color_net = nn.Sequential(*color_layers).to(torch_device)
 
@@ -241,7 +246,6 @@ class MLP(nn.Module):
         # x [batch, 16 + 3] 3 for position, 16 for encoded directions
         # if nto self.grid_encoding
         # x [batch, 16 + 32]
-
         input_dir, input_pos = x[:,:16], x[:,16:]
         # print(input_pos.shape, input_pos.dtype)
         out = self.sigma_net(input_pos)
@@ -280,7 +284,7 @@ def load_to_field(ti_field: ti.template(), arr: ti.types.ndarray(), offset: int)
 
 @ti.data_oriented
 class NerfDriver:
-    def __init__(self, scale, cascades, grid_size, base_res, log2_T, res, level, exp_step_factor, fuse_taichi_hashencoding_module=True):
+    def __init__(self, scale, cascades, grid_size, base_res, log2_T, res, level, exp_step_factor, fuse_taichi_hashencoding_module=True, fuse_taichi_composite_module=False):
         super(NerfDriver, self).__init__()
         
         self.res = res
@@ -293,6 +297,7 @@ class NerfDriver:
         self.exp_step_factor = exp_step_factor
         self.scale = scale
         self.fuse_taichi_hashencoding_module = fuse_taichi_hashencoding_module
+        self.fuse_taichi_composite_module = fuse_taichi_composite_module
         # rays intersection parameters
         # t1, t2 need to be initialized to -1.0
         self.hits_t = ti.Vector.field(n=2, dtype=data_type, shape=(self.N_rays))
@@ -378,7 +383,17 @@ class NerfDriver:
             grid_encoding = self.grid_encoding
         else:
             grid_encoding = None
-        self.mlp = MLP(grid_encoding_module=grid_encoding)
+
+        if self.fuse_taichi_composite_module:
+            kernel_args = (100, 1e-4)
+            composite_layer = EmptyTin(torch_device).register_kernel(self.composite_test, *kernel_args)\
+                                .register_input_field(self.out_1)\
+                                .register_input_field(self.out_3)\
+                                .register_output_field(self.rgb)\
+                                .finish()
+        else:
+            composite_layer = None
+        self.mlp = MLP(grid_encoding_module=grid_encoding, composite_module=composite_layer)
         self.dir_encoder = SHEncoder()
 
         # GUI render buffer (data type must be float32)
@@ -429,18 +444,6 @@ class NerfDriver:
                 value.data = torch.from_numpy(rgb_weights[64*32+64*64:64*32+64*64+3*64]).reshape(3, 64).to(torch_device)
                 # value.data.fill_(0)
             cnt += 1
-        
-        # if self.fuse_taichi_hashencoding_module:
-        #     print("hash embedding ", hash_embedding.shape)
-        #     offset = 0
-        #     for l in range(hash_encoding_module.n_tables):
-        #         table_size = hash_encoding_module.table_sizes[l]
-        #         print(f"[Level] {l}, table size {table_size} ")
-        #         load_to_field(hash_encoding_module.grids[l], hash_embedding, offset)
-        #         offset += table_size*2
-        #     print("offset ", offset)
-        #     assert offset == hash_embedding.shape[0], "Hash encoding parameters load mismatch."
-        #     # assert 1 == -1
 
         # load density bit field
         self.density_bitfield.from_numpy(model['model.density_bitfield'])
@@ -729,10 +732,16 @@ class NerfDriver:
             out = self.mlp(inputs_mlp)
             color, density = out[:, :3], out[:, -1]
 
-            self.density_torch_sparse_to_field(self.padd_block_network[None], density.contiguous())
-            self.color_torch_sparse_to_field(self.padd_block_network[None], color.contiguous())
+            if not self.fuse_taichi_composite_module:
+                self.density_torch_sparse_to_field(self.padd_block_network[None], density.contiguous())
+                self.color_torch_sparse_to_field(self.padd_block_network[None], color.contiguous())
 
-            self.composite_test(N_samples, T_threshold)
+                self.composite_test(N_samples, T_threshold)
+            else:
+                self.density_torch_sparse_to_field(self.padd_block_network[None], density.contiguous())
+                self.color_torch_sparse_to_field(self.padd_block_network[None], color.contiguous())
+                self.mlp.composite_module(self.out_1.to_torch(), self.out_3.to_torch())
+
             self.re_order(N_alive)
     
         return samples, N_alive, N_samples

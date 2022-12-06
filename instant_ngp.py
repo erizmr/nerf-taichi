@@ -49,7 +49,8 @@ model = NerfDriver( scale=scale,
                     res=[image_w, image_h], 
                     level=16, 
                     exp_step_factor=0,
-                    fuse_taichi_hashencoding_module=True)
+                    fuse_taichi_hashencoding_module=True,
+                    fuse_taichi_composite_module=False)
 
 np_type = np.float16
 model_dir = "./npy_models/"
