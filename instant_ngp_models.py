@@ -105,6 +105,7 @@ class MultiResHashEncoding:
         self.offsets = ti.field(ti.i32, shape=(16,))
         self.hash_map_sizes = ti.field(ti.uint32, shape=(16,))
         self.hash_map_indicator = ti.field(ti.i32, shape=(16,))
+        self.n_features = level * 2
 
     def hash_table_init(self):
         print(f'GridEncoding: base resolution: {self.base_res}, log scale per level:{self.per_level_scales:.5f} feature numbers per level: {2} maximum parameters per level: {self.max_params} level: {self.level}')
@@ -186,31 +187,23 @@ class MLP(nn.Module):
         encoding_module = None
         self.grid_encoding = grid_encoding_module
         hidden_size = 64
-        # self.grid_encoding = MultiResHashEncoding(batch_size=batch_size)
-        # self.grid_encoding.initialize()
         if self.grid_encoding:
             sigma_input_size = self.grid_encoding.n_features
         else:
             sigma_input_size = 32
         
         if self.grid_encoding:
-            encoding_kernel = None
-            if self.grid_encoding.dim == 2:
-                encoding_kernel = self.grid_encoding.encoding2D
-            elif self.grid_encoding.dim == 3:
-                encoding_kernel = self.grid_encoding.encoding3D
+            encoding_kernel = self.grid_encoding.hash_encode
 
             encoding_module = Tin(self.grid_encoding, device=torch_device) \
                 .register_kernel(encoding_kernel) \
-                .register_input_field(self.grid_encoding.input_positions) \
-                .register_output_field(self.grid_encoding.encoded_positions)
-            for l in range(self.grid_encoding.n_tables):
-                encoding_module.register_internal_field(self.grid_encoding.grids[l])
+                .register_input_field(self.grid_encoding.xyzs) \
+                .register_output_field(self.grid_encoding.xyzs_embedding)
+            encoding_module.register_internal_field(self.grid_encoding.hash_embedding)
             encoding_module.finish()
 
             # Hash encoding module
             self.hash_encoding_module = encoding_module
-
             sigma_layers.append(self.hash_encoding_module)
 
         n_parameters = 0
@@ -769,10 +762,10 @@ class NerfDriver:
                 self.depth[r] += depth_temp[0]
                 self.opacity[r] += opacity_temp[0]
     
-    @ti.kernel
-    def fill_hash_encodeing_input(self):
-        for i in self.xyzs:
-            self.mlp.grid_encoding.input_positions[i] = self.xyzs[i]
+    # @ti.kernel
+    # def fill_hash_encodeing_input(self):
+    #     for i in self.xyzs:
+    #         self.mlp.grid_encoding.input_positions[i] = self.xyzs[i]
     
     @ti.kernel
     def density_torch_sparse_to_field(self, size: int, density: ti.types.ndarray()):
@@ -811,7 +804,7 @@ class NerfDriver:
                 self.grid_encoding.hash_encode()
                 inputs_mlp = torch.cat([encoded_dir, self.xyzs_embedding.to_torch()], dim=1).to(device=torch_device)
             else:
-                self.fill_hash_encodeing_input()
+                # self.fill_hash_encodeing_input()
                 inputs_mlp = torch.cat([encoded_dir, self.xyzs.to_torch()], dim=1).to(device=torch_device)
             # print("inputs mlp ", inputs_mlp.shape, inputs_mlp.dtype)
             out = self.mlp(inputs_mlp)
