@@ -6,7 +6,6 @@ import platform
 
 from stannum import Tin
 from matplotlib import pyplot as plt
-from taichi.math import ivec2, ivec3
 from instant_ngp_utils import SHEncoder
 from taichi.math import uvec3
 
@@ -335,16 +334,8 @@ class NerfDriver:
         self.padd_block_network = ti.field(ti.i32, shape=())
         self.padd_block_composite = ti.field(ti.i32, shape=())
 
-        # # hash table variables
+        # hash table variables
         self.min_samples = 1 if exp_step_factor==0 else 4
-        # self.per_level_scales = 1.3195079565048218 # hard coded, otherwise it will be have lower percision
-        # self.base_res = base_res
-        # self.max_params = 2**log2_T
-        # self.level = level
-        # # hash table fields
-        # self.offsets = ti.field(ti.i32, shape=(16,))
-        # self.hash_map_sizes = ti.field(ti.uint32, shape=(16,))
-        # self.hash_map_indicator = ti.field(ti.i32, shape=(16,))
 
         # model parameters
         layer1_base = 32 * 64
@@ -547,7 +538,6 @@ class NerfDriver:
             mat_result = self.directions[i] @ c2w[:, :3].transpose()
             ray_d = tf_vec3(mat_result[0, 0], mat_result[0, 1],mat_result[0, 2])
             ray_o = c2w[:, 3]
-            # print(" ray o check ", ray_o)
             t1t2 = self._ray_aabb_intersec(ray_o, ray_d)
 
             if t1t2[1] > 0.0:
@@ -620,77 +610,6 @@ class NerfDriver:
             self.N_eff_samples[n] = s
             if s == 0:
                 self.alive_indices[n*2+c_index] = -1
-
-    # def hash_table_init(self):
-    #     print(f'GridEncoding: base resolution: {self.base_res}, log scale per level:{self.per_level_scales:.5f} feature numbers per level: {2} maximum parameters per level: {self.max_params} level: {self.level}')
-    #     offset = 0
-    #     for i in range(self.level):
-    #         resolution = int(np.ceil(self.base_res * np.exp(i*np.log(self.per_level_scales)) - 1.0)) + 1
-    #         params_in_level = resolution ** 3
-    #         params_in_level = int(resolution ** 3) if params_in_level % 8 == 0 else int((params_in_level + 8 - 1) / 8) * 8
-    #         params_in_level = min(self.max_params, params_in_level)
-    #         self.offsets[i] = offset
-    #         self.hash_map_sizes[i] = params_in_level
-    #         self.hash_map_indicator[i] = 1 if resolution ** 3 <= params_in_level else 0
-    #         offset += params_in_level
-    #         print(f"level: {i}, resolution: {resolution}, table size: {params_in_level}")
-
-    # @ti.kernel
-    # def hash_encode(self):
-    #     # get hash table embedding
-    #     ti.loop_config(block_dim=16)
-    #     for sn, level in ti.ndrange(self.model_launch[None], 16):
-    #         # normalize to [0, 1], before is [-0.5, 0.5]
-    #         xyz = self.xyzs[self.temp_hit[sn]] + 0.5
-    #         offset = self.offsets[level] * 2
-    #         indicator = self.hash_map_indicator[level]
-    #         map_size = self.hash_map_sizes[level]
-
-    #         init_val0 = tf_vec1(0.0)
-    #         init_val1 = tf_vec1(1.0)
-    #         local_feature_0 = init_val0[0]
-    #         local_feature_1 = init_val0[0]
-
-    #         index_temp = tf_index_temp(0)
-    #         w_temp = tf_vec8(0.0)
-    #         hash_temp_1 = tf_vec8(0.0)
-    #         hash_temp_2 = tf_vec8(0.0)
-
-    #         scale = self.base_res * ti.exp(level*ti.log(self.per_level_scales)) - 1.0
-    #         resolution = ti.cast(ti.ceil(scale), ti.uint32) + 1
-
-    #         pos = xyz * scale + 0.5
-    #         pos_grid_uint = ti.cast(ti.floor(pos), ti.uint32)
-    #         pos -= pos_grid_uint
-    #         # pos_grid_uint = ti.cast(pos_grid, ti.uint32)
-
-    #         for idx in ti.static(range(8)):
-    #             # idx_uint = ti.cast(idx, ti.uint32)
-    #             w = init_val1[0]
-    #             pos_grid_local = uvec3(0)
-
-    #             for d in ti.static(range(3)):
-    #                 if (idx & (1 << d)) == 0:
-    #                     pos_grid_local[d] = pos_grid_uint[d]
-    #                     w *= data_type(1 - pos[d])
-    #                 else:
-    #                     pos_grid_local[d] = pos_grid_uint[d] + 1
-    #                     w *= data_type(pos[d])
-
-    #             index = ti.int32(grid_pos2hash_index(indicator, pos_grid_local, resolution, map_size))
-    #             index_temp[idx] = offset+index*2
-    #             w_temp[idx] = w
-
-    #         for idx in ti.static(range(8)):
-    #             hash_temp_1[idx] = self.hash_embedding[index_temp[idx]]
-    #             hash_temp_2[idx] = self.hash_embedding[index_temp[idx]+1]
-
-    #         for idx in ti.static(range(8)):
-    #             local_feature_0 += data_type(w_temp[idx] * hash_temp_1[idx])
-    #             local_feature_1 += data_type(w_temp[idx] * hash_temp_2[idx])
-
-    #         self.xyzs_embedding[sn, level*2] = local_feature_0
-    #         self.xyzs_embedding[sn, level*2+1] = local_feature_1
 
 
     @ti.kernel
@@ -823,36 +742,6 @@ class NerfDriver:
         depth_np = self.depth.to_numpy().reshape(self.res[0], self.res[1])
         plt.imsave('taichi_ngp.png', (rgb_np*255).astype(np.uint8))
         # plt.imsave('taichi_ngp_depth.png', depth2img(depth_np))
-
-    # def render(self, x):
-    #     # Render process
-
-    #     # x [batch, (pos, dir)]
-    #     batch_size = x.shape[0]
-    #     samples = self.max_samples
-    #     pos_query = torch.Tensor(size=(samples, batch_size, 3)).to(torch_device)
-    #     view_dir = torch.Tensor(size=(samples, batch_size, 3)).to(torch_device)
-    #     dists = torch.Tensor(size=(samples, batch_size)).to(torch_device)
-
-    #     self.ray_intersect_generate_samples()
-    #     ti.sync()
-    #     torch.cuda.synchronize(device=None)
-
-    #     encoded_dir = self.dir_encoder(view_dir)
-    #     # print("pos, encoded dir ", pos_query.shape, " ", encoded_dir.shape)
-    #     input = torch.cat([pos_query, encoded_dir], dim=2)
-    #     # print("input to the network shape ", input.shape)
-    #     # Query fine model
-    #     density, color = self.query(input, self.mlp)
-    #     n = 1024
-    #     print('density ', density[n])
-    #     print('r ', color[n, 0])
-    #     print('g ', color[n, 1])
-    #     print('b ', color[n, 2])
-    #     # print("density ", density.shape, " color ", color.shape)
-    #     output = self.composite(density, color, dists, samples, batch_size)
-
-    #     return output
     
     def update_ti_modules(self, lr):
         self.mlp.update_ti_modules(lr)
